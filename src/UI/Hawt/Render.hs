@@ -10,7 +10,7 @@ where
     import qualified SDL
     import qualified SDL.Font as SDLF
     import Control.Monad.Trans.Reader
-    import Control.Monad.Trans.State
+    import Control.Monad.Trans.State hiding (state)
     import Control.Monad.Trans.Class
     import Foreign.C.Types
     import Linear (V4(..), V2(..))
@@ -18,11 +18,13 @@ where
     import System.FilePath
     import Data.Text
     import UI.Hawt.Type
+    import qualified Data.Map.Strict as Map
 
-    data RenderState = RenderState {    offset :: (Int, Int) }
+    data RenderState = RenderState {    offset :: (Int, Int),
+                                        texts ::  Map.Map Text SDL.Texture }
 
     createRenderState :: RenderState
-    createRenderState = RenderState (0,0)
+    createRenderState = RenderState (0,0) Map.empty
 
     setOffset :: Int -> Int -> RenderCtx ()
     setOffset x y = do
@@ -50,9 +52,9 @@ where
     createRenderEnv :: SDL.Window -> IO RenderEnv
     createRenderEnv win = do
         SDLF.initialize
-        renderer <- SDL.createRenderer win (-1) SDL.defaultRenderer
-        font <- SDLF.load ("data"</>"arial.ttf") 11
-        return $ RenderEnv renderer font
+        newRenderer <- SDL.createRenderer win (-1) SDL.defaultRenderer
+        newFont <- SDLF.load ("data"</>"arial.ttf") 11
+        return $ RenderEnv newRenderer newFont
 
     type RenderCtx a = ReaderT RenderEnv (StateT RenderState IO) a    
 
@@ -73,14 +75,27 @@ where
     getTextSize :: Text -> RenderCtx (Int, Int)
     getTextSize text = do
         env <- ask
-        SDLF.size (font env) text    
+        SDLF.size (font env) text
+
+    getTextTexture :: Text -> Color -> RenderCtx SDL.Texture
+    getTextTexture text color = do
+        state <- lift $ get
+        env <- ask
+        let tc = texts state
+            mtt = Map.lookup text tc
+        case mtt of
+            Just tt -> return tt
+            Nothing -> do
+                surf <- SDLF.blended (font env) (toSdlColor color) text
+                texture <- SDL.createTextureFromSurface (renderer env) surf
+                lift $ put state { texts = Map.insert text texture tc }
+                return texture
 
     drawText :: Text -> Color -> Int -> Int -> Alignment -> Alignment -> RenderCtx ()
     drawText text color x y halign valign = do
         env <- ask        
         (ox,oy) <- offset <$> (lift $ get)
-        surf <- SDLF.blended (font env) (toSdlColor color) text
-        t <- SDL.createTextureFromSurface (renderer env) surf
+        t <- getTextTexture text color
         tinfo <- SDL.queryTexture t
         let width = fromIntegral (SDL.textureWidth tinfo)
             xp =    case halign of
@@ -93,8 +108,6 @@ where
                         Center -> y - height `div` 2
                         Trailing -> y - height
         SDL.copy (renderer env) t Nothing (Just (toSdlRect (R (ox + xp) (oy + yp) width height)))
-        SDL.destroyTexture t
-        SDL.freeSurface surf
 
     setDrawColor :: Color -> RenderCtx ()
     setDrawColor color = do
